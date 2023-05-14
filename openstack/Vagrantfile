@@ -1,0 +1,62 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+module Providers
+    PARALLELS = 'parallels'.freeze
+    VIRTUALBOX = 'virtualbox'.freeze
+    HYPERV = 'hyperv'.freeze
+    VMWARE_FUSION = 'vmware_fusion'.freeze
+    VMWARE_WORKSTATION = 'vmware_workstation'.freeze
+    LIBVIRT = 'libvirt'.freeze
+    DOCKER = 'docker'.freeze
+    AWS = 'aws'.freeze
+    AZURE = 'azure'.freeze
+    GOOGLE = 'google'.freeze
+    OPENSTACK = 'openstack'.freeze
+    DIGITALOCEAN = 'digitalocean'.freeze
+    HYPERKIT = 'hyperkit'.freeze
+    KVM = 'kvm'.freeze
+    LXC = 'lxc'.freeze
+    LXD = 'lxd'.freeze
+    NONE = 'none'.freeze
+    POWERSHELL = 'powershell'.freeze
+    SCALEWAY = 'scaleway'.freeze
+    VAGRANT_CLOUD = 'vagrant_cloud'.freeze
+end
+
+Vagrant.configure("2") do |config|
+    ####################################################
+    #TODO: Change this to accomodate your architecture.
+    ####################################################
+    host_architecture = 'arm'
+    ##################################################
+    #TODO: Change this to accomodate your provider.  
+    ##################################################
+    provider = Providers::PARALLELS
+
+    ##############################################
+    # Set the box based on the host architecture
+    ##############################################
+    if host_architecture == 'arm'
+        config.vm.box = "bento/fedora-37-arm64" # ARM Based
+    else
+        config.vm.box = "bento/fedora-36" # Intel Based
+    end
+
+    # Create devstack single host 
+    config.vm.define "devstack" do |node|
+        node.vm.hostname = "devstack"
+        node.vm.network "public_network", ip: "10.150.10.25"
+    
+        node.vm.provider provider do |v|
+          v.name = "devstack"
+          v.memory = 16000
+          v.cpus = 6
+        end
+        node.vm.provision "ansible" do |ansible|
+            ansible.playbook = "devstack_playbook.yml"
+            ansible.extra_vars = {
+              provision_files_path: "../files"
+            }
+        end
+      end
+  end

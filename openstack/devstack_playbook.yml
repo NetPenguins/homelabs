@@ -1,0 +1,93 @@
+---
+- hosts: all
+  become: true
+  tasks:
+    - name: Install acl (yum)
+      yum:
+        name: acl
+        state: present
+      become_user: root
+      when:
+        - ansible_pkg_mgr == 'dnf'
+      tags: install_git_yum
+
+    - name: Install sudo
+      package:
+        name: sudo
+        state: present
+      become_user: root
+      when:
+        - ansible_pkg_mgr == 'yum'
+      tags: install_git_yum
+
+    - name: Install sudo (yum)
+      yum:
+        name: sudo
+        state: present
+      become_user: root
+      when:
+        - ansible_pkg_mgr == 'dnf'
+      tags: install_git_yum
+
+    - name: Create stack user
+      user:
+        name: stack
+        shell: /bin/bash
+        home: /opt/stack
+        create_home: yes
+      become_user: root
+
+    - name: Add stack user to sudoers
+      lineinfile:
+        path: /etc/sudoers.d/stack
+        line: 'stack ALL=(ALL) NOPASSWD: ALL'
+        create: yes  
+      become_user: root
+
+    - name: Set executable permissions for /opt/stack
+      shell: sudo chmod +x /opt/stack
+      args:
+        executable: /bin/bash
+      become_user: stack
+
+    - name: Install git
+      package:
+        name: git
+        state: present
+      become_user: root
+      when:
+        - ansible_pkg_mgr == 'yum'
+      tags: install_git_yum
+
+    - name: Install git (yum)
+      yum:
+        name: git
+        state: present
+      become_user: root
+      when:
+        - ansible_pkg_mgr == 'dnf'
+      tags: install_git_yum
+      
+    - name: Clone DevStack repository
+      git:
+        repo: https://opendev.org/openstack/devstack.git
+        dest: /opt/stack/devstack
+        force: yes
+      become_user: stack
+      tags: clone_devstack
+
+    - name: Copy local.conf to stack user's home directory
+      copy:
+        src: files/local.conf
+        dest: /opt/stack/devstack/local.conf
+        owner: stack
+      become_user: stack
+      tags: copy_local_conf
+    
+    - name: Execute stack.sh
+      shell: FORCE=yes ./stack.sh
+      args:
+        executable: /bin/bash
+        chdir: /opt/stack/devstack
+      become_user: stack
+      tags: execute_stack_sh

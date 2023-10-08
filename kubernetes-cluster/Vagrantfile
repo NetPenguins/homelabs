@@ -1,0 +1,38 @@
+# Vagrantfile for Kubernetes cluster on Parallels
+
+Vagrant.configure("2") do |config|
+
+    config.vm.box = "bento/debian-12-arm64"
+    provider_type = "parallels" # or "virtualbox" or "libvirt"
+    # Create Kubernetes master
+    config.vm.define "master" do |master|
+      master.vm.hostname = "master"
+      master.vm.network "private_network", ip: "192.168.50.10"
+  
+      master.vm.provider provider_type do |v|
+        v.memory = 16096
+        v.cpus = 6
+        v.name = "k8s-master-node"
+      end
+      # Install Kubernetes
+      master.vm.provision "shell", path: "install-k8s-master.sh"
+    end  
+
+    # Create worker nodes
+    (1..2).each do |i|
+      config.vm.define "worker#{i}" do |worker|
+        worker.vm.hostname = "worker#{i}"
+        worker.vm.network "private_network", ip: "192.168.50.#{i+10}"
+        
+        worker.vm.provider provider_type do |v|
+          v.memory = 4096
+          v.cpus = 2
+          v.name = "k8s-worker-#{i}"
+        end
+      end
+      # Install Kubernetes
+      config.vm.provision "shell", path: "install-k8s-worker.sh"
+    end
+    config.vm.synced_folder "./shared", "/kube/shared"
+    
+  end

@@ -1,0 +1,218 @@
+---
+- name: Install Kubernetes Master
+  hosts: master
+  become: yes
+  tasks:
+    - name: Turning off swap
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+    - name: Setting Up Env for containerd
+      block:
+        - copy:
+            content: |
+              overlay 
+              br_netfilter
+            dest: /etc/modules-load.d/containerd.conf 
+        - command: modprobe overlay
+        - command: modprobe br_netfilter
+        - copy:
+            content: |
+              net.bridge.bridge-nf-call-iptables = 1
+              net.ipv4.ip_forward = 1 
+              net.bridge.bridge-nf-call-ip6tables = 1 
+            dest: /etc/sysctl.d/99-kubernetes-k8s.conf
+
+    - name: Installing containerd
+      block:
+        - command: sysctl --system
+        - apt:
+            update_cache: yes
+        - apt:
+            name: containerd
+            state: present
+
+    - name: Configuring containerd
+      block:
+        - shell: containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
+        - replace:
+            path: /etc/containerd/config.toml
+            regexp: 'SystemdCgroup = false'
+            replace: 'SystemdCgroup = true'
+
+    - name: Restarting containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    - name: Installing Kubernetes
+      block:
+        - apt:
+            update_cache: yes
+        - apt:
+            name:
+              - gnupg
+              - gnupg2 
+              - curl 
+              - software-properties-common 
+            state: present
+
+    # - name: Add Kubernetes apt keyring gpg
+    #   shell: (yes | curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key) | (yes | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg)
+    - name: Remove existing Kubernetes apt keyring gpg
+      shell: rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes apt keyring gpg
+      shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+
+    - name: Add Kubernetes list to sources.list.d directory
+      copy:
+          content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /'
+          dest: /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Install Kubernetes components on master nodes
+      block:
+        - apt:
+            update_cache: yes
+        - apt:
+            name:
+              - kubelet 
+              - kubeadm 
+              - kubectl 
+            state: present
+
+    - name: Hold Kubernetes components at their current version, not to be upgraded by apt upgrade.
+      command: apt-mark hold kubelet kubeadm kubectl
+
+    - name: Creating control plane and setting up kubeconfig for the user.
+      block:
+        - shell: kubeadm init --control-plane-endpoint=192.168.50.10
+        - shell: kubeadm token create --print-join-command | tee /kube/shared/join_command.txt
+        - shell: |
+            mkdir -p $HOME/.kube
+            cp /etc/kubernetes/admin.conf $HOME/.kube/config
+            chown $(id -u):$(id -g) $HOME/.kube/config
+
+    # Install Pod network on master node.
+    # Note that this task will fail if the master node is not ready yet.
+    # You may need to add a retry or wait until the master node is ready.
+    # Also, you need to make sure that the master node has access to the internet.
+    # If not, you need to download the calico.yaml file and change the URL to the local path.
+    # You can use get_url or copy module to download or copy the file to the master node.
+    # Then change the URL to the local path of the file.
+    # For example, if you download or copy the file to /tmp/calico.yaml,
+    # then change the URL to file:///tmp/calico.yaml.
+    #
+    # If you want to use a different CNI plugin, replace calico.yaml with your CNI yaml file.
+    # And also replace https://docs.projectcalico.org/manifests/calico.yaml with your CNI yaml file URL or local path.
+    #
+    # This is just an example and may not work in your environment.
+    # Please adjust it according to your environment and needs.
+    - name: Install Pod network
+      command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+    # 
+    - name: Install Kubernetes Dashboard
+      command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+
+    - name: Create Dashboard Admin User
+      block:
+        - copy:
+            content: |
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: admin-user
+                namespace: kubernetes-dashboard
+            dest: /tmp/dashboard-adminuser.yaml
+        - command: kubectl apply -f /tmp/dashboard-adminuser.yaml
+
+    - name: Create Secret for Admin User
+      block:
+        - copy:
+            content: |
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: admin-user-token
+                annotations:
+                  kubernetes.io/service-account.name: admin-user
+                namespace: kubernetes-dashboard
+              type: kubernetes.io/service-account-token
+            dest: /tmp/dashboard-adminuser-token.yaml
+        - command: kubectl apply -f /tmp/dashboard-adminuser-token.yaml
+
+    - name: Create ClusterRoleBinding for Admin User
+      block:
+        - copy:
+            content: |
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRoleBinding
+              metadata:
+                name: admin-user
+              roleRef:
+                apiGroup: rbac.authorization.k8s.io
+                kind: ClusterRole
+                name: cluster-admin
+              subjects:
+              - kind: ServiceAccount
+                name: admin-user
+                namespace: kubernetes-dashboard
+            dest: /tmp/dashboard-adminuser-role.yaml
+        - command: kubectl apply -f /tmp/dashboard-adminuser-role.yaml
+
+    - name: Get Dashboard Token for Admin User
+      shell: kubectl -n kubernetes-dashboard get secret $(kubectl -n kubernetes-dashboard get secret | grep admin-user-token | awk '{print $1}') -o jsonpath="{.data.token}" | base64 --decode
+      register: dashboard_token
+
+    - debug:
+        var: dashboard_token.stdout_lines
+
+    - name: Expose Dashboard Service Externally
+      command: kubectl patch svc kubernetes-dashboard -n kubernetes-dashboard --type='json' -p '[{"op":"replace","path":"/spec/type","value":"NodePort"}]'
+    - name: Apply Service for dashboard nodeport
+      block:
+        - copy:
+            content: |
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: kubernetes-dashboard
+                namespace: kubernetes-dashboard
+              spec:
+                selector:
+                  k8s-app: kubernetes-dashboard
+                ports:
+                - protocol: TCP
+                  port: 8443
+                  targetPort: 8443
+                type: NodePort
+            dest: /tmp/dashboard-nodeport-service.yaml
+        - command: kubectl apply -f /tmp/dashboard-nodeport-service.yaml
+
+    # - name: Apply NetworkPolicy to restrict access to the CIDR 192.168.50.0/24
+    #   block:
+    #     - copy:
+    #         content: |
+    #           apiVersion: networking.k8s.io/v1
+    #           kind: NetworkPolicy
+    #           metadata:
+    #             name: access-kubernetes-dashboard
+    #             namespace: kubernetes-dashboard
+    #           spec:
+    #             podSelector:
+    #               matchLabels:
+    #                 k8s-app: kubernetes-dashboard
+    #             ingress:
+    #               - from:
+    #                 - ipBlock:
+    #                     cidr: 192.168.50.0/24
+    #                 ports:
+    #                 - protocol: TCP
+    #                   port: 443 # Assuming that the dashboard is exposed on port 443.
+    #         dest: /tmp/networkpolicy.yaml
+    #     - command: kubectl apply -f /tmp/networkpolicy.yaml
+

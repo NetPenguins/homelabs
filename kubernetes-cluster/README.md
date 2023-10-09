@@ -5,7 +5,7 @@ Vagrantfile that defines a Kubernetes cluster using Parallels as the provider. I
 > Ansible is being used for its [idempotency](https://docs.ansible.com/ansible/latest/reference_appendices/glossary.html#term-Idempotency)
 
 > [!IMPORTANT]
-> Before running this, ensure a solid understanding of what the [Vagrantfile](/Vagrantfile) is going to do. It is particulary important to review the resource allocations and ensure your host machine can handle it. 
+> Before running this, ensure a solid understanding of what the [Vagrantfile](./Vagrantfile) is going to do. It is particulary important to review the resource allocations and ensure your host machine can handle it. 
 
 ## Example Usage
 

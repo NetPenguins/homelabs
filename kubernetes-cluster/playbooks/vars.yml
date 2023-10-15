@@ -1,0 +1,2 @@
+join_command: 'kubeadm join 192.168.50.10:6443 --token gmmppj.gfhfdwacvfv1h6x6 --discovery-token-ca-cert-hash sha256:2316106d7f38825fd71a5175e3fabe8dd636452a134674e7aa7e80cde4d2bb1e '
+worker1_joined: True

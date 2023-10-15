@@ -2,84 +2,93 @@
 - name: Install Kubernetes Worker
   hosts: workers
   become: true
+  roles: 
+    - common_tasks
   tasks:
-    - name: Turning off swap
-      shell: |
-        swapoff -a
-        sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+  
+  - name: Include vars.yml
+    include_vars:
+      file: "{{ playbook_dir }}/vars.yml"
 
-    - name: Setting Up Env for containerd
-      block:
-        - copy:
-            content: |
-              overlay 
-              br_netfilter
-            dest: /etc/modules-load.d/containerd.conf 
-        - command: modprobe overlay
-        - command: modprobe br_netfilter
-        - copy:
-            content: |
-              net.bridge.bridge-nf-call-iptables = 1
-              net.ipv4.ip_forward = 1 
-              net.bridge.bridge-nf-call-ip6tables = 1 
-            dest: /etc/sysctl.d/99-kubernetes-k8s.conf
+  - debug: 
+      var: join_command
 
-    - name: Installing containerd
-      block:
-        - command: sysctl --system
-        - apt:
-            update_cache: yes
-            name: containerd
-            state: present
+  - name: Create .kube directory for the user
+    file:
+      path: /home/vagrant/.kube
+      state: directory
+    when: not ansible_check_mode  # This ensures it only runs in normal mode, not check mode
 
-    - name: Configuring containerd
-      block:
-        - shell: containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
-        - replace:
-            path: /etc/containerd/config.toml
-            regexp: 'SystemdCgroup = false'
-            replace: 'SystemdCgroup = true'
+  - name: Copy kubeconfig to the user's .kube directory
+    copy:
+      src: ./kubeconfig.yaml
+      dest: /home/vagrant/.kube/config
+      owner: vagrant
+      group: vagrant
+      mode: 0600
 
-    - name: Restarting containerd
-      systemd:
-        name: containerd
-        state: restarted
-        enabled: yes
+  - name: Create .kube directory for the root user
+    file:
+      path: /root/.kube
+      state: directory
+    when: not ansible_check_mode  # This ensures it only runs in normal mode, not check mode
 
-    - name: Installing Kubernetes
-      block:
-        - apt:
-            update_cache: yes
-            name:
-              - gnupg
-              - gnupg2 
-              - curl 
-              - software-properties-common 
-            state: present
+  - name: Copy kubeconfig to the root user's .kube directory
+    copy:
+      src: ./kubeconfig.yaml
+      dest: /root/.kube/config
+      owner: root
+      group: root
+      mode: 0600
 
-    - name: Remove existing Kubernetes apt keyring gpg
-      shell: rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - name: Check if hostname exists in vars.yml
+    lineinfile:
+      path: "{{ playbook_dir }}/vars.yml"
+      regexp: "^{{ inventory_hostname }}_joined:"
+      state: absent
+    check_mode: yes
+    changed_when: false
+    register: host_check
+    become: false
+    delegate_to: localhost
 
-    - name: Add Kubernetes apt keyring gpg
-      shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - ansible.builtin.debug:
+      var: host_check
 
-    - name: Add Kubernetes list to sources.list.d directory
-      copy:
-          content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /'
-          dest: /etc/apt/sources.list.d/kubernetes.list
+  - name: Use kubectl to check the node
+    shell: "kubectl get nodes | grep  {{ inventory_hostname }}" # Replace with the actual node name
+    register: node_check
+    ignore_errors: yes  # Ignore errors to handle the absence of the node
 
-    - name: Install Kubernetes components on worker nodes
-      block:
-        - apt:
-            update_cache: yes
-            name:
-              - kubelet 
-              - kubeadm 
-              - kubectl 
-            state: present
+  - name: Display node existence status
+    debug:
+      var: node_check
 
-    - name: Hold Kubernetes components at their current version, not to be upgraded by apt upgrade.
-      command: apt-mark hold kubelet kubeadm kubectl
+  - name: Set default value if hostname does not exist
+    lineinfile:
+      path: "{{ playbook_dir }}/vars.yml"
+      line: "{{ inventory_hostname }}_joined: {{ node_check.rc == 0 }}"
+    when: host_check.found == 0
+    become: false
+    delegate_to: localhost
 
-    - name: Joining control plane
-      shell: $(cat /kube/shared/join_command.txt)
+  - ansible.builtin.debug:
+      var: hostvars[inventory_hostname][inventory_hostname ~ '_joined']
+
+  - name: Joining control plane
+    command: "{{ join_command }}"
+    register: join_command_result
+    ignore_errors: true
+    when: node_check.rc != 0 and (hostvars[inventory_hostname][inventory_hostname ~ '_joined'] == False or not hostvars[inventory_hostname][inventory_hostname ~ '_joined'])
+
+  - ansible.builtin.debug:
+      var: join_command_result
+
+  - name: Update join command result in vars.yml
+    replace:
+      path: "{{ playbook_dir }}/vars.yml"
+      regexp: "{{ inventory_hostname }}_joined: .*"
+      replace: "{{ inventory_hostname }}_joined: {{ not join_command_result.failed }}"
+    delegate_to: localhost
+    become: false
+    when: join_command_result is changed and node_check.rc != 0

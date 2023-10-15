@@ -2,99 +2,66 @@
 - name: Install Kubernetes Master
   hosts: master
   become: yes
+  roles: 
+    - common_tasks
   tasks:
-    - name: Turning off swap
-      shell: |
-        swapoff -a
-        sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+    - name: Check if control plane is already initialized
+      command: kubectl get nodes --no-headers
+      ignore_errors: yes
+      register: control_plane_check
+    - name: check whoami
+      command: whoami
+      register: whoami
 
-    - name: Setting Up Env for containerd
-      block:
-        - copy:
-            content: |
-              overlay 
-              br_netfilter
-            dest: /etc/modules-load.d/containerd.conf 
-        - command: modprobe overlay
-        - command: modprobe br_netfilter
-        - copy:
-            content: |
-              net.bridge.bridge-nf-call-iptables = 1
-              net.ipv4.ip_forward = 1 
-              net.bridge.bridge-nf-call-ip6tables = 1 
-            dest: /etc/sysctl.d/99-kubernetes-k8s.conf
-
-    - name: Installing containerd
-      block:
-        - command: sysctl --system
-        - apt:
-            update_cache: yes
-        - apt:
-            name: containerd
-            state: present
-
-    - name: Configuring containerd
-      block:
-        - shell: containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
-        - replace:
-            path: /etc/containerd/config.toml
-            regexp: 'SystemdCgroup = false'
-            replace: 'SystemdCgroup = true'
-
-    - name: Restarting containerd
-      systemd:
-        name: containerd
-        state: restarted
-        enabled: yes
-
-    - name: Installing Kubernetes
-      block:
-        - apt:
-            update_cache: yes
-        - apt:
-            name:
-              - gnupg
-              - gnupg2 
-              - curl 
-              - software-properties-common 
-            state: present
-
-    # - name: Add Kubernetes apt keyring gpg
-    #   shell: (yes | curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key) | (yes | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg)
-    - name: Remove existing Kubernetes apt keyring gpg
-      shell: rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-    - name: Add Kubernetes apt keyring gpg
-      shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-
-    - name: Add Kubernetes list to sources.list.d directory
-      copy:
-          content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /'
-          dest: /etc/apt/sources.list.d/kubernetes.list
-
-    - name: Install Kubernetes components on master nodes
-      block:
-        - apt:
-            update_cache: yes
-        - apt:
-            name:
-              - kubelet 
-              - kubeadm 
-              - kubectl 
-            state: present
-
-    - name: Hold Kubernetes components at their current version, not to be upgraded by apt upgrade.
-      command: apt-mark hold kubelet kubeadm kubectl
-
-    - name: Creating control plane and setting up kubeconfig for the user.
+    - name: Creating control plane and setting up kubeconfig for the user
       block:
         - shell: kubeadm init --control-plane-endpoint=192.168.50.10
-        - shell: kubeadm token create --print-join-command | tee /kube/shared/join_command.txt
-        - shell: |
-            mkdir -p $HOME/.kube
-            cp /etc/kubernetes/admin.conf $HOME/.kube/config
-            chown $(id -u):$(id -g) $HOME/.kube/config
+          when: control_plane_check.stderr | length > 0 
+
+    - name: Get Dashboard Token for Admin User
+      shell: kubeadm token create --print-join-command
+      register: master_join_command_in
+
+    - name: Create kubeconfig directory for root user
+      file:
+        path: /root/.kube
+        state: directory
+
+    - name: Copy admin.conf to root user's kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Create kubeconfig directory for vagrant user
+      file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+
+    - name: Copy admin.conf to vagrant user's kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: yes
+        owner: vagrant
+        group: vagrant
+        mode: '0600'
+
+    - name: Read kubeconfig on remote host
+      shell: cat /home/vagrant/.kube/config  # Adjust the path to your kubeconfig file
+      register: kubeconfig_content
+
+    - name: Save kubeconfig on localhost
+      copy:
+        content: "{{ kubeconfig_content.stdout }}"
+        dest: ./kubeconfig.yaml  # Path to where you want to save the kubeconfig on localhost
+      become: false
+      delegate_to: localhost
 
     # Install Pod network on master node.
     # Note that this task will fail if the master node is not ready yet.
@@ -114,7 +81,10 @@
     - name: Install Pod network
       command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
 
-    # 
+    # Task Explanation:
+    # This section of the playbook focuses on setting up and configuring the Kubernetes Dashboard
+    # for managing the Kubernetes cluster. 
+
     - name: Install Kubernetes Dashboard
       command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
 
@@ -192,27 +162,60 @@
                 type: NodePort
             dest: /tmp/dashboard-nodeport-service.yaml
         - command: kubectl apply -f /tmp/dashboard-nodeport-service.yaml
+    
+    - name: Get Kubernetes Dashboard Port
+      shell: kubectl get service kubernetes-dashboard -o=jsonpath='{.spec.ports[?(@.port==8443)].nodePort}' -n kubernetes-dashboard
+      register: k8s_dashboard_port
 
-    # - name: Apply NetworkPolicy to restrict access to the CIDR 192.168.50.0/24
-    #   block:
-    #     - copy:
-    #         content: |
-    #           apiVersion: networking.k8s.io/v1
-    #           kind: NetworkPolicy
-    #           metadata:
-    #             name: access-kubernetes-dashboard
-    #             namespace: kubernetes-dashboard
-    #           spec:
-    #             podSelector:
-    #               matchLabels:
-    #                 k8s-app: kubernetes-dashboard
-    #             ingress:
-    #               - from:
-    #                 - ipBlock:
-    #                     cidr: 192.168.50.0/24
-    #                 ports:
-    #                 - protocol: TCP
-    #                   port: 443 # Assuming that the dashboard is exposed on port 443.
-    #         dest: /tmp/networkpolicy.yaml
-    #     - command: kubectl apply -f /tmp/networkpolicy.yaml
+    - set_fact:
+        k8s_dashboard_info: 
+          dashboard_host: "https://{{ ansible_host }}:{{ k8s_dashboard_port.stdout }}"
+          dashboard_token: "{{dashboard_token.stdout}}"
 
+    - debug:
+        var: k8s_dashboard_info
+
+    - name: Set shared variables
+      set_fact:
+        master_join_command: "{{ master_join_command_in.stdout }}"
+      delegate_to: localhost
+
+    # This set of tasks is designed to manage the existence and content of the 'join_command' variable
+    # in the local shared 'vars.yml' file, which is typically used for configuration management in Ansible. 
+    # It first checks if 'join_command' already exists, and based on the result, either replaces its value, 
+    # creates a backup, or creates a new 'vars.yml' file with 'join_command'.
+
+    - name: Check if join_command exists in vars.yml
+      shell: grep -q '^join_command:' "{{ playbook_dir }}/vars.yml"
+      register: join_command_check
+      ignore_errors: yes
+      become: false
+      delegate_to: localhost
+
+    - ansible.builtin.debug:
+        var: join_command_check
+
+    - name: Save join_command to vars.yml
+      block:
+        - name: Replace join_command in vars.yml
+          replace:
+            path: "{{ playbook_dir }}/vars.yml"
+            regexp: '^join_command:.*'
+            replace: 'join_command: {{ master_join_command }}'
+          delegate_to: localhost
+          become: false
+          when: join_command_check.rc == 0
+        - name: Backup the original vars.yml
+          command: mv "{{ playbook_dir }}/vars.yml" "{{ playbook_dir }}/vars.yml.bak"
+          delegate_to: localhost
+          become: false
+          when: join_command_check.rc == 1
+
+        - name: Create vars.yml with join_command
+          copy:
+            content: |
+              join_command: '{{ master_join_command }}'
+            dest: "{{ playbook_dir }}/vars.yml"
+          delegate_to: localhost
+          become: false
+          when: join_command_check.rc == 2

@@ -46,8 +46,8 @@ Vagrant.configure("2") do |config|
       master.vm.hostname = "master"
       master.vm.network "private_network", ip: "192.168.50.10"
       master.vm.provider provider do |v|
-        v.memory = 16096
-        v.cpus = 6
+        v.memory = 8096 # TODO: Adjust these values to your builds needs. 
+        v.cpus = 4
         v.name = "k8s-master-node"
       end
       # Install Kubernetes
@@ -69,16 +69,30 @@ Vagrant.configure("2") do |config|
           v.name = "k8s-worker-#{i}"
         end
 
-        # Install Kubernetes
+        # Provision the K8S worker nodes
         worker.vm.provision "ansible" do |ansible|
           ansible.playbook = "./playbooks/workers.yml"
           ansible.groups = {
             "workers" => ["worker#{i}"]
           }
         end
+
+        # On destroy deregister the node from the master node.
+        worker.trigger.before :destroy do |trigger|
+          trigger.name = "Unregister K8s worker node"
+          trigger.info = "Unregister"
+          trigger.run_remote = { inline: <<-SHELL
+            # Check if the node exists before attempting to unregister
+            if kubectl get nodes | grep worker#{i} &> /dev/null; then
+              kubectl drain worker#{i} --ignore-daemonsets
+              kubectl cordon worker#{i}
+              kubectl delete node worker#{i}
+            else
+              echo "Node worker#{i} does not exist in the cluster."
+            fi
+            SHELL
+          }
+        end
       end
-      # Or use a shell script
-      # config.vm.provision "shell", path: "install-k8s-worker.sh"
     end
-    config.vm.synced_folder "./shared", "/kube/shared"
 end

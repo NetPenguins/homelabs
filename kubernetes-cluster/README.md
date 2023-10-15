@@ -7,6 +7,9 @@ Vagrantfile that defines a Kubernetes cluster It creates a master node and two w
 > [!IMPORTANT]
 > Before running this, ensure a solid understanding of what the [Vagrantfile](./Vagrantfile) is going to do. It is particulary important to review the resource allocations and ensure your host machine can handle it. 
 
+>[!WARNING]
+> The use of saving files and states to the host is not a viable production practice and should be replaced with some form of vaulting. 
+
 ## Example Usage
 
 >[!NOTE]
@@ -16,7 +19,7 @@ Vagrantfile that defines a Kubernetes cluster It creates a master node and two w
 vagrant up master && vagrant up
 ```
 
->[!INFO]
+>[!NOTE]
 > The worker nodes have a vagrant trigger assigned to them for `worker.trigger.before :destroy`. This trigger is used to cleanly tear down the worker nodes by unregistering them from the cluster before destroying the VM.
 
 ### Inputs
